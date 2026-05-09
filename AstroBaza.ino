@@ -5,6 +5,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <Preferences.h>
 #include <WiFiClientSecure.h> 
+#include <time.h>
 
 #define LED_PIN    38
 #define LED_COUNT  1
@@ -77,7 +78,18 @@ const char CSS_STYLE[] PROGMEM = R"rawliteral(
 </style>
 )rawliteral";
 
-// Nowe, bezpieczne wysyłanie Telegram JSON POST
+// Funkcja pobierająca aktualny czas z serwera NTP
+String getCurrentTimeStr() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo, 2000)){
+    return "Brak czasu (NTP)";
+  }
+  char timeStringBuff[50];
+  strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  return String(timeStringBuff);
+}
+
+// Nowe, bezpieczne wysyłanie Telegram JSON POST z godziną
 void sendTelegram(String msg) {
   if (WiFi.status() != WL_CONNECTED || telegramToken == "" || chatId == "") return;
   
@@ -106,9 +118,12 @@ void sendTelegram(String msg) {
   http.begin(client, fullUrl); 
   http.addHeader("Content-Type", "application/json");
 
-  StaticJsonDocument<256> jsonDoc;
+  // Dodajemy stempel czasowy na początku wiadomości
+  String finalMsg = "🕒 [" + getCurrentTimeStr() + "]\n" + msg;
+
+  StaticJsonDocument<512> jsonDoc; // Trochę większy bufor na dłuższą wiadomość
   jsonDoc["chat_id"] = cleanChatId;
-  jsonDoc["text"] = msg;
+  jsonDoc["text"] = finalMsg;
   String payload;
   serializeJson(jsonDoc, payload);
 
@@ -421,20 +436,27 @@ void setup() {
 
   if(WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WIFI] POŁĄCZONO! IP: " + WiFi.localIP().toString());
+    
+    // Konfiguracja czasu z serwerów NTP (dla strefy czasowej Polski CET/CEST)
+    configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org");
+    Serial.println("[NTP] Rozpoczęto synchronizację czasu.");
+
     WiFi.softAPdisconnect(true); 
     WiFi.mode(WIFI_STA); 
     apMode = false;
   } else if (ssid == "") {
+    // Odpala AP TYLKO jak jest pusta pamięć (np. nowy układ albo po wciśnięciu BOOT na 4s)
     Serial.println("\n[WIFI] Brak konfiguracji sieci! Uruchamiam bezpieczny tryb ustawień (AP).");
     WiFi.disconnect(true, true); 
     delay(100);
     
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("Astro-Baza-Config", "Astro1234");
+    WiFi.softAP("Astro Baza", "Astro1234");
     
-    Serial.println("[AP] Połącz się z WiFi 'Astro-Baza-Config' (Hasło: Astro1234) i wejdź na http://192.168.4.1");
+    Serial.println("[AP] Połącz się z WiFi 'Astro Baza' (Hasło: Astro1234) i wejdź na http://192.168.4.1");
     apMode = true;
   } else {
+    // Ma dane, ale nie łączy -> chowa się i czeka (bezpieczeństwo)
     Serial.println("\n[WIFI] Router nie odpowiada. Ze względów bezpieczeństwa blokuję tryb AP.");
     Serial.println("[WIFI] System przejdzie w tryb oczekiwania i będzie ponawiał próby połączenia w tle.");
     WiFi.softAPdisconnect(true);
