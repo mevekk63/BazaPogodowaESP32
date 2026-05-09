@@ -235,7 +235,7 @@ void fetchAndAnalyze() {
         }
       } else { 
         if (astro.winState != STATE_ACTIVE) {
-          sendTelegram("🟢 OKNO AKTYWNE!\nDobson na pole!\nTrwa do: " + endStr + "\nSzczyt formy o: " + bestHourStr);
+          sendTelegram("🟢 OKNO AKTYWNE!\Teleskop na dwór!\nTrwa do: " + endStr + "\nSzczyt formy o: " + bestHourStr);
           astro.winState = STATE_ACTIVE;
         }
       }
