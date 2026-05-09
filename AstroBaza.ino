@@ -30,6 +30,11 @@ const int NIGHT_END       = 4;
 const String apiBase = "https://api.open-meteo.com/v1/forecast?";
 bool apMode = false; 
 
+// --- HARDWARE RESET ---
+#define BOOT_BUTTON 0 // Fizyczny przycisk BOOT na ESP32
+bool isButtonPressed = false;
+unsigned long buttonPressTime = 0;
+
 bool pendingReboot = false;
 unsigned long rebootTime = 0;
 
@@ -72,11 +77,26 @@ const char CSS_STYLE[] PROGMEM = R"rawliteral(
 </style>
 )rawliteral";
 
+// Nowe, bezpieczne wysyłanie Telegram JSON POST
 void sendTelegram(String msg) {
   if (WiFi.status() != WL_CONNECTED || telegramToken == "" || chatId == "") return;
   
-  String cleanToken = telegramToken; cleanToken.trim();
-  String cleanChatId = chatId; cleanChatId.trim();
+  String cleanToken = telegramToken; 
+  cleanToken.trim();
+
+  // Wymuszona naprawa tokenu
+  if (cleanToken.startsWith("bot") || cleanToken.startsWith("BOT")) {
+    cleanToken = cleanToken.substring(3);
+  }
+
+  // Telegram zawsze ma dwukropek w tokenie
+  if (cleanToken.indexOf(':') == -1) {
+    Serial.println("[TELEGRAM] BŁĄD KRYTYCZNY: Twój Token Telegrama jest nieprawidłowy! Brak znaku dwukropka ':'. Zmień go w Ustawieniach.");
+    return;
+  }
+
+  String cleanChatId = chatId; 
+  cleanChatId.trim();
 
   WiFiClientSecure client;
   client.setInsecure(); 
@@ -178,7 +198,6 @@ void fetchAndAnalyze() {
             bestHourStr = timeString.substring(11, 16);
           }
         } else {
-          // Koniec ciągłego okna, przerywamy skanowanie
           if (firstValidIdx != -1) break;
         }
       } else {
@@ -195,21 +214,18 @@ void fetchAndAnalyze() {
       astro.windowMsg = "Okienko: " + startStr + " - " + endStr + "<br>Jakość szczytowa: " + bestHourStr;
 
       if (firstValidIdx > 0) {
-        // Okno wystąpi w przyszłości
         if (astro.winState != STATE_UPCOMING) {
           sendTelegram("⏳ Zbliża się okno pogodowe!\nStart: " + startStr + "\nKoniec: " + endStr + "\nNajlepszy seeing: " + bestHourStr);
           astro.winState = STATE_UPCOMING;
         }
       } else { 
-        // firstValidIdx == 0 -> Okno trwa WŁAŚNIE TERAZ
         if (astro.winState != STATE_ACTIVE) {
-          sendTelegram("🟢 OKNO AKTYWNE!\nTeleskop na dwór!\nTrwa do: " + endStr + "\nSzczyt formy o: " + bestHourStr);
+          sendTelegram("🟢 OKNO AKTYWNE!\nDobson na pole!\nTrwa do: " + endStr + "\nSzczyt formy o: " + bestHourStr);
           astro.winState = STATE_ACTIVE;
         }
       }
 
     } else {
-      // Brak okna (albo się skończyło, albo nie było)
       if (astro.winState == STATE_ACTIVE) {
         sendTelegram("🔴 Koniec okna pogodowego.\nWarunki się zepsuły albo wzeszło słońce. Pakuj sprzęt.");
       } else if (astro.winState == STATE_UPCOMING) {
@@ -291,7 +307,8 @@ void handleSettings() {
         <input type='text' name='ssid' value='{{SSID}}' required placeholder='np. Orange_24'>
         
         <label>Hasło WiFi:</label>
-        <input type='password' name='password' value='{{PASSWORD}}'>
+        <!-- Hasło NIE jest przesyłane do przeglądarki ze względów bezpieczeństwa -->
+        <input type='password' name='password' placeholder='(Zostaw puste, aby nie zmieniać)'>
         
         <label>Telegram Bot Token:</label>
         <input type='text' name='telegramToken' value='{{TOKEN}}' placeholder='12345:ABCDE...'>
@@ -319,7 +336,6 @@ void handleSettings() {
   html.replace("{{STYLE}}", CSS_STYLE);
   html.replace("{{AP_WARNING}}", apWarning);
   html.replace("{{SSID}}", ssid);
-  html.replace("{{PASSWORD}}", password);
   html.replace("{{TOKEN}}", telegramToken);
   html.replace("{{CHAT_ID}}", chatId);
   html.replace("{{LAT}}", lat);
@@ -341,7 +357,11 @@ void handleSave() {
     String s_lon = server.arg("lon"); s_lon.trim();
     
     preferences.putString("ssid", s_ssid);
-    preferences.putString("password", s_pass);
+    
+    if (s_pass != "") {
+      preferences.putString("password", s_pass);
+    }
+    
     preferences.putString("telegramToken", s_token);
     preferences.putString("chatId", s_chat);
     preferences.putString("lat", s_lat);
@@ -371,6 +391,8 @@ void setup() {
   Serial.begin(115200);
   delay(1000); 
 
+  pinMode(BOOT_BUTTON, INPUT_PULLUP); 
+
   led.begin();
   led.setBrightness(0);
   led.clear();
@@ -386,7 +408,7 @@ void setup() {
   WiFi.setSleep(false);
 
   if (ssid != "") {
-    Serial.println("[WIFI] Próba łączenia z: " + ssid);
+    Serial.println("[WIFI] Próba łączenia z zapisaną siecią: " + ssid);
     WiFi.begin(ssid.c_str(), password.c_str());
     
     int retries = 0;
@@ -402,16 +424,21 @@ void setup() {
     WiFi.softAPdisconnect(true); 
     WiFi.mode(WIFI_STA); 
     apMode = false;
-  } else {
-    Serial.println("\n[WIFI] Błąd połączenia lub brak danych! Uruchamiam tryb Konfiguracji (AP).");
+  } else if (ssid == "") {
+    Serial.println("\n[WIFI] Brak konfiguracji sieci! Uruchamiam bezpieczny tryb ustawień (AP).");
     WiFi.disconnect(true, true); 
     delay(100);
     
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("Astro-Baza-Config");
+    WiFi.softAP("Astro-Baza-Config", "Astro1234");
     
-    Serial.println("[AP] Połącz się z WiFi 'Astro-Baza-Config' i wejdź na http://192.168.4.1");
+    Serial.println("[AP] Połącz się z WiFi 'Astro-Baza-Config' (Hasło: Astro1234) i wejdź na http://192.168.4.1");
     apMode = true;
+  } else {
+    Serial.println("\n[WIFI] Router nie odpowiada. Ze względów bezpieczeństwa blokuję tryb AP.");
+    Serial.println("[WIFI] System przejdzie w tryb oczekiwania i będzie ponawiał próby połączenia w tle.");
+    WiFi.softAPdisconnect(true);
+    apMode = false;
   }
 
   server.on("/", handleRoot);
@@ -423,6 +450,30 @@ void setup() {
 void loop() {
   server.handleClient(); 
   
+  // --- DETEKCJA TWARDEGO RESETU (Przycisk BOOT) ---
+  if (digitalRead(BOOT_BUTTON) == LOW) {
+    if (!isButtonPressed) {
+      isButtonPressed = true;
+      buttonPressTime = millis();
+    } else if (millis() - buttonPressTime > 4000) { 
+      Serial.println("\n[SYSTEM] Wykryto twardy reset przyciskiem BOOT!");
+      Serial.println("[SYSTEM] Czyszczę całą pamięć i wracam do fabryki...");
+      
+      preferences.begin("astro", false);
+      preferences.clear(); 
+      preferences.end();
+      
+      led.setBrightness(50);
+      led.setPixelColor(0, led.Color(255, 0, 0)); 
+      led.show();
+      
+      delay(1000);
+      ESP.restart(); 
+    }
+  } else {
+    isButtonPressed = false;
+  }
+
   if (pendingReboot) {
     if (millis() > rebootTime) {
       WiFi.softAPdisconnect(true);
@@ -445,7 +496,7 @@ void loop() {
 
   if (millis() - lastWifiCheck >= wifiInterval) {
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[WIFI] Reanimacja połączenia...");
+      Serial.println("[WIFI] Reanimacja połączenia (Watchdog)...");
       WiFi.disconnect();
       WiFi.begin(ssid.c_str(), password.c_str());
       WiFi.setSleep(false);
